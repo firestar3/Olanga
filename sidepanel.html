@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Olanga</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0c;
+  --panel: #111113;
+  --card: #151517;
+  --border: #1c1c1f;
+  --border2: #252529;
+  --border3: #303036;
+  --accent: #e4e4e8;
+  --dim: #48484f;
+  --text: #c8c8ce;
+  --sub: #6b6b74;
+  --green: #5bb98c;
+  --warn: #c9853a;
+  --err: #c46464;
+  --blue: #7a8acf;
+  --code: #0d0d0f;
+  --r: 7px;
+  --r-sm: 5px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Header ────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  height: 44px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.logo {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .03em;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.logo svg { flex-shrink: 0; }
+.logo .ver {
+  font-weight: 300;
+  color: var(--sub);
+  font-size: 10px;
+  margin-left: 2px;
+}
+.sdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sub);
+  flex-shrink: 0;
+  transition: background .3s;
+}
+.sdot.live { background: var(--green); }
+.sdot.busy { background: var(--warn); animation: pulse-dot 1.2s infinite; }
+.sdot.err { background: var(--err); }
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+#stxt { font-size: 10px; color: var(--sub); white-space: nowrap; }
+.sp { flex: 1; }
+.settings-toggle {
+  background: none;
+  border: none;
+  color: var(--sub);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: color .12s;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+}
+.settings-toggle:hover { color: var(--text); }
+
+/* ── Settings Panel ────────────────────────────────── */
+.settings-panel {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height .25s ease;
+}
+.settings-panel.open { max-height: 500px; }
+.section {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.section-header {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  color: var(--sub);
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+
+/* ── Fields ────────────────────────────────────────── */
+.field { margin-bottom: 6px; }
+.field:last-child { margin-bottom: 0; }
+.field-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+input[type="password"], input[type="text"], select {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  padding: 5px 9px;
+  border-radius: var(--r-sm);
+  font-family: inherit;
+  font-size: 11px;
+  outline: none;
+  transition: border-color .12s;
+  width: 100%;
+}
+input:focus, select:focus { border-color: var(--dim); }
+select { cursor: pointer; }
+
+/* ── Buttons ───────────────────────────────────────── */
+button {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border2);
+  cursor: pointer;
+  transition: all .1s;
+  background: transparent;
+  color: var(--text);
+  white-space: nowrap;
+}
+button:hover { background: rgba(255,255,255,.03); border-color: var(--border3); }
+button:active { transform: scale(.97); }
+.btn-primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.btn-primary:hover { background: #fff; border-color: #fff; }
+.btn-primary:disabled { opacity: .3; cursor: not-allowed; }
+.btn-danger { color: var(--err); border-color: rgba(196,100,100,.25); }
+.btn-danger:hover { background: rgba(196,100,100,.06); }
+.btn-warn { color: var(--warn); border-color: rgba(201,133,58,.25); }
+.btn-warn:hover { background: rgba(201,133,58,.06); }
+.btn-sm { padding: 4px 9px; font-size: 10px; }
+.btn-block { width: 100%; text-align: center; }
+
+/* ── Mode Tabs ─────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  padding: 2px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
+.mode-tab {
+  flex: 1;
+  text-align: center;
+  padding: 5px 10px;
+  font-size: 10px;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  color: var(--sub);
+  background: none;
+  cursor: pointer;
+  transition: all .1s;
+}
+.mode-tab:hover { color: var(--text); }
+.mode-tab.active { background: var(--border2); color: var(--accent); }
+
+/* ── Tab Bar ───────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  min-height: 30px;
+  flex-shrink: 0;
+}
+.tab-url {
+  font-size: 10px;
+  color: var(--sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Chat ──────────────────────────────────────────── */
+.chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  scroll-behavior: smooth;
+}
+.chat::-webkit-scrollbar { width: 3px; }
+.chat::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: msgIn .2s ease-out;
+}
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.mrole {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding-left: 2px;
+}
+.mrole.ai { color: var(--blue); }
+.mrole.user { color: var(--accent); }
+.mrole.sys { color: var(--sub); }
+.mbody {
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 7px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+.msg.ai .mbody { border-left: 2px solid var(--blue); }
+.msg.user .mbody { border-left: 2px solid var(--dim); color: var(--accent); }
+.msg.sys .mbody {
+  color: var(--sub);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  background: var(--bg);
+}
+
+/* ── Thinking ──────────────────────────────────────── */
+.thk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--sub);
+  padding: 4px 2px;
+}
+.thkd span {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sub);
+  animation: blink 1.4s infinite;
+}
+.thkd span:nth-child(2) { animation-delay: .2s; }
+.thkd span:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%,80%,100% { opacity: .15; } 40% { opacity: .7; } }
+.timer {
+  font-size: 10px;
+  color: var(--sub);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Input Row ─────────────────────────────────────── */
+.input-row {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 5px;
+  align-items: flex-end;
+  background: var(--panel);
+}
+.input-row textarea {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: var(--r);
+  font-family: inherit;
+  font-size: 12px;
+  resize: none;
+  min-height: 36px;
+  max-height: 110px;
+  overflow-y: auto;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color .12s;
+}
+.input-row textarea:focus { border-color: var(--dim); }
+.input-row textarea::placeholder { color: var(--dim); }
+.send-btn {
+  background: var(--accent);
+  border: none;
+  color: var(--bg);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background .1s;
+}
+.send-btn:hover { background: #fff; }
+.send-btn:disabled { opacity: .2; cursor: not-allowed; }
+
+/* ── Welcome ───────────────────────────────────────── */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  text-align: center;
+  flex: 1;
+  gap: 14px;
+}
+.welcome h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.welcome p {
+  font-size: 11px;
+  color: var(--sub);
+  line-height: 1.7;
+  max-width: 240px;
+}
+.setup-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.9;
+  text-align: left;
+  max-width: 260px;
+  color: var(--sub);
+}
+.setup-card b { color: var(--text); font-weight: 500; }
+.setup-card code {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--green);
+  font-size: 10px;
+}
+.setup-card a { color: var(--blue); text-decoration: none; }
+.setup-card a:hover { text-decoration: underline; }
+.mode-hint {
+  font-size: 10px;
+  color: var(--sub);
+}
+* { scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="9" stroke="#e4e4e8" stroke-width="2.2"/>
+      <line x1="12" y1="2" x2="12" y2="5" stroke="#0a0a0c" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    Olanga
+    <span class="ver">1.1.8</span>
+  </div>
+  <div class="sdot" id="sd"></div>
+  <span id="stxt">not connected</span>
+  <div class="sp"></div>
+  <button class="settings-toggle" id="settingsBtn" title="Settings">&#9881;</button>
+</header>
+
+<div class="settings-panel" id="settingsPanel">
+  <div class="section">
+    <div class="section-header">API Key</div>
+    <div class="field">
+      <div class="field-row">
+        <input type="password" id="groqKeyInput" placeholder="Paste API key…" style="flex:1">
+        <button class="btn-sm" id="addKeyBtn">Add</button>
+      </div>
+    </div>
+    <div class="field">
+      <div class="field-row">
+        <select id="keySel" style="flex:1"><option value="">no keys</option></select>
+        <button class="btn-sm btn-danger" id="removeKeyBtn" title="Remove">&#10005;</button>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-header">Model</div>
+    <div class="field">
+      <div class="field-row">
+        <select id="providerSel" style="flex:1">
+          <option value="groq">Groq</option>
+          <option value="cerebras">Cerebras</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="openrouter">OpenRouter</option>
+        </select>
+        <select id="modelSel" style="flex:2">
+          <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
+          <option value="llama-3.1-8b-instant">Llama 3.1 8B</option>
+          <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
+          <option value="gemma2-9b-it">Gemma2 9B</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn-primary btn-block" id="connectBtn" style="margin-top:5px">Connect</button>
+  </div>
+</div>
+
+<div class="section" style="padding:7px 14px;">
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="mode-tabs" style="flex:1">
+      <button class="mode-tab active" id="btn-ctx" data-mode="ctx">Context</button>
+      <button class="mode-tab" id="btn-full" data-mode="full">Full</button>
+    </div>
+    <span class="mode-hint" id="mode-hint">read + reply</span>
+    <button class="btn-sm btn-warn" id="clearBtn">Clear</button>
+  </div>
+</div>
+
+<div class="tab-bar">
+  <span class="tab-url" id="tabUrl">no tab connected</span>
+  <button class="btn-sm" id="refreshTabBtn" style="font-size:10px;padding:3px 7px">Refresh</button>
+</div>
+
+<div class="chat" id="chat">
+  <div class="welcome" id="welcome">
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="9" stroke="#e4e4e8" stroke-width="2"/>
+      <line x1="12" y1="2" x2="12" y2="5" stroke="#0a0a0c" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <h2>Olanga</h2>
+    <p>Navigate to any page, then type what you want done.</p>
+    <div class="setup-card">
+      <b>Setup:</b><br>
+      1. Click the gear above and add a key<br>
+      2. Get one free at <a href="https://console.groq.com" target="_blank">console.groq.com</a><br>
+      3. Click <b>Connect</b><br>
+      4. Go to any page and type below
+    </div>
+  </div>
+</div>
+
+<div class="input-row">
+  <textarea id="ui" placeholder="What should I do?" rows="1"></textarea>
+  <button class="send-btn" id="stopBtn" style="display:none; background:var(--err);" title="Terminate Process">&#9632;</button>
+  <button class="send-btn" id="sb">&#8593;</button>
+</div>
+
+<script src="sidepanel.js"></script>
+</body>
+</html>
