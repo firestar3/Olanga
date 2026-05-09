@@ -10,17 +10,28 @@ var timerInterval = null;
 var agentMode = 'ctx'; // 'ctx' or 'full'
 var activeTabId = null;
 var activeTabUrl = '';
+var olangaVersion = 'v2'; // 'v1' or 'v2'
+
+// Expose key for v2 module
+window.getActiveApiKey = function() { return groqKey; };
+window.getSavedKeys = function() { return savedKeys; };
 
 // ── Key Management ───────────────────────────────────────────────────────────
 var savedKeys = [];
+var keyRotationEnabled = false;
+var currentKeyIndex = 0;
 
-chrome.storage.local.get(['olanga_keys'], function(result) {
+chrome.storage.local.get(['olanga_keys', 'olanga_key_rotation'], function(result) {
   savedKeys = result.olanga_keys || [];
+  keyRotationEnabled = result.olanga_key_rotation || false;
   renderKeySel();
   if (savedKeys.length) {
     groqKey = savedKeys[0];
     checkGroq();
   }
+  // Restore toggle state
+  var toggle = document.getElementById('keyRotationToggle');
+  if (toggle) toggle.checked = keyRotationEnabled;
 });
 
 function renderKeySel() {
@@ -67,8 +78,29 @@ function removeKey() {
 
 function switchKey() {
   var val = document.getElementById('keySel').value;
-  if (val) { groqKey = val; addMsg('sys', '🔑 Switched to …' + val.slice(-6)); }
+  if (val) {
+    groqKey = val;
+    currentKeyIndex = savedKeys.indexOf(val);
+    if (currentKeyIndex < 0) currentKeyIndex = 0;
+    addMsg('sys', '🔑 Switched to …' + val.slice(-6));
+  }
 }
+
+// ── Key Rotation ─────────────────────────────────────────────────────────────
+function rotateKey() {
+  if (!keyRotationEnabled || savedKeys.length < 2) return false;
+  var nextIndex = (currentKeyIndex + 1) % savedKeys.length;
+  currentKeyIndex = nextIndex;
+  groqKey = savedKeys[nextIndex];
+  // Update the dropdown to reflect the new active key
+  document.getElementById('keySel').value = groqKey;
+  addMsg('sys', '🔄 Key rotated → …' + groqKey.slice(-6) + ' (key ' + (nextIndex + 1) + '/' + savedKeys.length + ')');
+  return true;
+}
+
+// Expose for v2 module
+window.rotateKey = rotateKey;
+window.isKeyRotationEnabled = function() { return keyRotationEnabled; };
 
 // ── Settings Toggle ──────────────────────────────────────────────────────────
 function toggleSettings() {
@@ -80,33 +112,15 @@ function updateModelList() {
   var provider = document.getElementById('providerSel').value;
   var sel = document.getElementById('modelSel');
   sel.innerHTML = '';
-  var models = provider === 'openrouter' ? [
-    ['openrouter/free', 'Auto (best free model)'],
-    ['deepseek/deepseek-r1:free', 'DeepSeek R1 (free)'],
-    ['deepseek/deepseek-r1-distill-llama-70b:free', 'DeepSeek R1 Llama 70B (free)'],
-    ['meta-llama/llama-3.3-70b-instruct:free', 'Llama 3.3 70B (free)'],
-    ['google/gemini-2.0-flash-exp:free', 'Gemini 2.0 Flash (free)'],
-    ['google/gemma-3-27b-it:free', 'Gemma 3 27B (free)'],
-  ] : (provider === 'cerebras' ? [
-    ['qwen-3-235b-a22b-instruct-2507', 'Qwen 3 235B'],
-    ['llama3.1-8b', 'Llama 3.1 8B'],
-    ['llama3.3-70b', 'Llama 3.3 70B'],
-  ] : (provider === 'gemini' ? [
-    ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
-    ['gemini-2.5-pro', 'Gemini 2.5 Pro'],
-    ['gemini-2.0-flash', 'Gemini 2.0 Flash'],
-    ['gemini-2.0-pro-exp-02-05', 'Gemini 2.0 Pro Exp'],
-  ] : [
-    ['llama-3.3-70b-versatile', 'Llama 3.3 70B'],
-    ['llama-3.1-8b-instant', 'Llama 3.1 8B (fast)'],
-    ['mixtral-8x7b-32768', 'Mixtral 8x7B'],
-    ['gemma2-9b-it', 'Gemma2 9B'],
-  ]));
+  var models = [
+    ['gemini-2.5-flash', 'Gemini Flash'],
+    ['gemma-4-31b-it', 'Gemini Gemma 4 (Gemma 4 31B)']
+  ];
   models.forEach(function(m) {
     var o = document.createElement('option');
     o.value = m[0]; o.textContent = m[1]; sel.appendChild(o);
   });
-  addMsg('sys', 'Switched to ' + provider + '. Select a model and click Connect.');
+  addMsg('sys', 'Select a model and click Connect.');
 }
 
 // ── Connect ──────────────────────────────────────────────────────────────────
@@ -119,47 +133,21 @@ function saveAndCheck() {
 }
 
 async function checkGroq() {
-  if (!groqKey) { setSt('err', 'no key'); addMsg('sys', '⚠ Enter an API key and click Connect.\nGroq: console.groq.com\nOpenRouter: openrouter.ai'); return; }
+  if (!groqKey) { setSt('err', 'no key'); addMsg('sys', '⚠ Enter an API key and click Connect.\\nGemini: aistudio.google.com'); return; }
   setSt('', 'connecting…');
   var provider = document.getElementById('providerSel').value;
-  var testUrl = provider === 'openrouter'
-    ? 'https://openrouter.ai/api/v1/models'
-    : (provider === 'cerebras' ? 'https://api.cerebras.ai/v1/models' 
-    : (provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?key=' + groqKey
-    : 'https://api.groq.com/openai/v1/models'));
+  var testUrl = 'https://generativelanguage.googleapis.com/v1beta/models?key=' + groqKey;
   try {
-    var headers = provider === 'gemini' ? {} : { 'Authorization': 'Bearer ' + groqKey };
+    var headers = {};
     var r = await fetch(testUrl, { headers: headers });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     ollamaOk = true;
     var model = document.getElementById('modelSel').value;
-    setSt('live', provider + ' connected');
-    addMsg('sys', '✓ Connected via ' + provider + '! Model: ' + model + '\nHi, I am Olanga. Navigate to any page and tell me what to do.');
+    setSt('live', 'connected');
+    addMsg('sys', '✓ Connected! Model: ' + model + '\\nHi, I am Olanga. Navigate to any page and tell me what to do.');
     var welcome = document.getElementById('welcome');
     if (welcome) welcome.style.display = 'none';
     connectToTab();
-    if (provider === 'openrouter') {
-      fetch('https://openrouter.ai/api/v1/models?supported_parameters=temperature', {
-        headers: { 'Authorization': 'Bearer ' + groqKey }
-      }).then(function(r) { return r.json(); }).then(function(d) {
-        var free = (d.data || []).filter(function(m) {
-          return m.pricing && (m.pricing.prompt === 0 || m.pricing.prompt === '0');
-        }).sort(function(a, b) { return a.name.localeCompare(b.name); });
-        if (!free.length) return;
-        var sel = document.getElementById('modelSel');
-        sel.innerHTML = '';
-        var auto = document.createElement('option');
-        auto.value = 'openrouter/free'; auto.textContent = 'Auto (best free model)';
-        sel.appendChild(auto);
-        free.forEach(function(m) {
-          var o = document.createElement('option');
-          o.value = m.id;
-          o.textContent = m.name + (m.context_length ? ' (' + Math.round(m.context_length / 1000) + 'k ctx)' : '');
-          sel.appendChild(o);
-        });
-        addMsg('sys', 'Loaded ' + free.length + ' free models from OpenRouter.');
-      }).catch(function() {});
-    }
   } catch (e) {
     ollamaOk = false;
     setSt('err', 'connection failed');
@@ -366,30 +354,32 @@ function validateAction(a, snap) {
 async function callAI(system, user) {
   var model = document.getElementById('modelSel').value;
   var provider = document.getElementById('providerSel').value;
-  var endpoint = provider === 'openrouter'
-    ? 'https://openrouter.ai/api/v1/chat/completions'
-    : (provider === 'cerebras' ? 'https://api.cerebras.ai/v1/chat/completions'
-    : (provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
-    : 'https://api.groq.com/openai/v1/chat/completions'));
+  var endpoint = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
   var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + groqKey };
-  if (provider === 'openrouter') {
-    headers['HTTP-Referer'] = 'chrome-extension://olanga';
-    headers['X-Title'] = 'Olanga';
-  }
-  var messages = model.includes('deepseek-r1')
-    ? [{ role: 'user', content: system + '\n\n' + user }]
-    : [{ role: 'system', content: system }, { role: 'user', content: user }];
+  
+  var messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   var body = { model: model, messages: messages, temperature: 0.1, max_tokens: 2000 };
+
+  var keysTriedThisCall = 0;
+  var maxKeyAttempts = keyRotationEnabled ? savedKeys.length : 1;
 
   for (var attempt = 0; attempt < 3; attempt++) {
     var resp = await fetch(endpoint, { method: 'POST', headers: headers, body: JSON.stringify(body) });
     if (resp.status === 429) {
+      // Try rotating to next key before waiting
+      if (keyRotationEnabled && keysTriedThisCall < maxKeyAttempts - 1) {
+        rotateKey();
+        keysTriedThisCall++;
+        headers['Authorization'] = 'Bearer ' + groqKey;
+        continue; // retry immediately with new key
+      }
       var wait = (attempt + 1) * 15;
-      addMsg('sys', '⏳ Rate limited. Waiting ' + wait + 's…');
+      addMsg('sys', '⏳ Rate limited' + (keyRotationEnabled ? ' (all keys exhausted)' : '') + '. Waiting ' + wait + 's…');
       await delay(wait * 1000);
+      keysTriedThisCall = 0; // reset for next round
       continue;
     }
-    if (!resp.ok) { var t = await resp.text(); throw new Error(provider + ' ' + resp.status + ': ' + t.slice(0, 200)); }
+    if (!resp.ok) { var t = await resp.text(); throw new Error('Gemini ' + resp.status + ': ' + t.slice(0, 200)); }
     var data = await resp.json();
     var out = data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : '';
     out = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
@@ -413,13 +403,26 @@ async function doSend() {
   document.getElementById('stopBtn').style.display = 'flex';
   setSt('busy', 'working…');
   try {
-    var snap;
-    try { snap = await getSnap(); }
-    catch (e) { addMsg('sys', '⚠ Could not read page: ' + e.message); return; }
-    if (agentMode === 'ctx') {
-      await runContext(txt, snap);
+    if (olangaVersion === 'v2' && window.OlangaV2) {
+      // v2.0 — Vision-based agent
+      window.OlangaV2.setTabId(activeTabId);
+      window.OlangaV2.setBusy(true);
+      if (agentMode === 'ctx') {
+        await window.OlangaV2.runContext(txt);
+      } else {
+        await window.OlangaV2.runAgent(txt);
+      }
+      window.OlangaV2.setBusy(false);
     } else {
-      await runAgent(txt, snap);
+      // v1.1.8 — DOM-based agent
+      var snap;
+      try { snap = await getSnap(); }
+      catch (e) { addMsg('sys', '⚠ Could not read page: ' + e.message); return; }
+      if (agentMode === 'ctx') {
+        await runContext(txt, snap);
+      } else {
+        await runAgent(txt, snap);
+      }
     }
   } catch (e) {
     addMsg('sys', '❌ ' + e.message);
@@ -568,7 +571,40 @@ document.getElementById('connectBtn').addEventListener('click', saveAndCheck);
 document.getElementById('clearBtn').addEventListener('click', clrChat);
 document.getElementById('refreshTabBtn').addEventListener('click', connectToTab);
 document.getElementById('sb').addEventListener('click', doSend);
-document.getElementById('stopBtn').addEventListener('click', function() { isCancelled = true; setSt('busy', 'stopping…'); });
+document.getElementById('stopBtn').addEventListener('click', function() {
+  isCancelled = true;
+  if (window.OlangaV2) window.OlangaV2.cancel();
+  setSt('busy', 'stopping…');
+});
+
+// ── Key Rotation Toggle ──────────────────────────────────────────────────────
+document.getElementById('keyRotationToggle').addEventListener('change', function() {
+  keyRotationEnabled = this.checked;
+  chrome.storage.local.set({ olanga_key_rotation: keyRotationEnabled });
+  addMsg('sys', keyRotationEnabled
+    ? '🔄 Key rotation enabled — will auto-cycle through ' + savedKeys.length + ' key(s) on rate limit'
+    : '🔄 Key rotation disabled — using single key');
+});
+
+// ── Version Switcher ─────────────────────────────────────────────────────────
+function switchVersion(ver) {
+  olangaVersion = ver;
+  document.querySelectorAll('.ver-btn').forEach(function(btn) {
+    btn.classList.remove('active', 'v2-active');
+  });
+  if (ver === 'v2') {
+    document.getElementById('verBtn2').classList.add('active', 'v2-active');
+    document.getElementById('v2indicator').classList.add('visible');
+    addMsg('sys', '🔮 Switched to Olanga v2.0 (Vision Mode)\n• Uses real screenshots — AI sees what you see\n• Clicks and types at exact pixel positions\n• Best with Gemini or OpenRouter vision models');
+  } else {
+    document.getElementById('verBtn1').classList.add('active');
+    document.getElementById('v2indicator').classList.remove('visible');
+    addMsg('sys', '⚡ Switched to Olanga v1.1.8 (Classic Mode)\n• Fast DOM-based page reading\n• Index-based element interaction');
+  }
+}
+
+document.getElementById('verBtn1').addEventListener('click', function() { switchVersion('v1'); });
+document.getElementById('verBtn2').addEventListener('click', function() { switchVersion('v2'); });
 
 document.querySelectorAll('.mode-tab').forEach(function(btn) {
   btn.addEventListener('click', function() {
