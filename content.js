@@ -1,4 +1,4 @@
-// Olanga Content Script — Bridge injected into every page
+// Olanga Content Script - Bridge injected into every page
 // Provides snap() and exec() capabilities via chrome.runtime messaging
 
 (function() {
