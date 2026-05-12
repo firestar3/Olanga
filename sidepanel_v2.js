@@ -86,6 +86,22 @@
     });
   }
 
+  // ── Get actual image dimensions (for coordinate scaling) ─────────────────
+  // captureVisibleTab returns images at native device resolution (e.g. 2x on HiDPI).
+  // Instead of resizing, we measure the real image dimensions and scale coordinates.
+  async function getImageDimensions(dataUrl) {
+    return new Promise(function(resolve) {
+      var img = new Image();
+      img.onload = function() {
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.onerror = function() {
+        resolve(null);
+      };
+      img.src = dataUrl;
+    });
+  }
+
   // ── Vision AI Call (with key rotation support) ──────────────────────────
   async function callVisionAI(systemPrompt, userPrompt, screenshotDataUrl) {
     var provider = document.getElementById('providerSel').value;
@@ -96,7 +112,7 @@
 
     // Build the messages with image
     var imageData = screenshotDataUrl.split(',')[1]; // base64 part
-    var mimeType = 'image/png';
+    var mimeType = screenshotDataUrl.startsWith('data:image/jpeg') ? 'image/jpeg' : 'image/png';
 
     var contents = [{
       role: 'user',
@@ -108,7 +124,7 @@
 
     var body = {
       contents: contents,
-      generationConfig: { temperature: 0.1, maxOutputTokens: 2000 }
+      generationConfig: { temperature: 0.2, maxOutputTokens: 4096 }
     };
 
     var keysTriedThisCall = 0;
@@ -194,6 +210,10 @@
     var pageInfo;
     try { pageInfo = await getPageInfo(); } catch (e) { pageInfo = {}; }
 
+    var vw = pageInfo.viewportWidth || 1280;
+    var vh = pageInfo.viewportHeight || 720;
+    var imageForAI = screenshot.dataUrl; // Send original screenshot
+
     // Build conversation history
     var msgs = Array.from(document.querySelectorAll('#chat .msg'));
     var chatHistory = msgs.map(function(m) {
@@ -215,13 +235,13 @@
       'CONVERSATION HISTORY:\n' + (chatHistory || '(none yet)') + '\n\n' +
       'PAGE URL: ' + (pageInfo.url || 'unknown') + '\n' +
       'PAGE TITLE: ' + (pageInfo.title || 'unknown') + '\n' +
-      'VIEWPORT: ' + (pageInfo.viewportWidth || '?') + 'x' + (pageInfo.viewportHeight || '?') + '\n\n' +
+      'VIEWPORT: ' + vw + 'x' + vh + '\n\n' +
       'I am attaching a screenshot of the current browser page.\n\n' +
       'USER: "' + userMsg + '"';
 
     var raw = '';
     try {
-      raw = await callVisionAI(CTX_SYS, ctxUser, screenshot.dataUrl);
+      raw = await callVisionAI(CTX_SYS, ctxUser, imageForAI);
     } catch (e) {
       rmThk();
       addMsg('sys', '\u274c ' + e.message);
@@ -232,16 +252,16 @@
     addMsg('ai', raw.trim() + '\n\u23f1 ' + elapsed);
   }
 
-  // ── Full Agent Mode (v2) \u2014 Vision + Coordinate Actions ──────────────────
+  // ── Full Agent Mode (v2) — Vision + Coordinate Actions ──────────────────
   async function v2RunAgent(userMsg) {
     v2Cancelled = false;
-    var MAX_STEPS = 20;
+    var MAX_STEPS = 30;
     var startTime = Date.now();
     var stepN = 0;
     var callCount = 0;
     var lastActionStr = '';
     var repeatCount = 0;
-    var currentDpr = 1;
+    var actionHistory = []; // Cumulative history of all steps taken
 
     // Get initial page info
     var pageInfo;
@@ -255,7 +275,6 @@
       var screenshot;
       try {
         screenshot = await captureScreenshot();
-        currentDpr = screenshot.devicePixelRatio || 1;
       } catch (e) {
         addMsg('sys', '\u26a0 Screenshot failed: ' + e.message);
         break;
@@ -264,57 +283,88 @@
       // Refresh page info
       try { pageInfo = await getPageInfo(); } catch (e) {}
 
+      // Get viewport CSS dimensions and actual image dimensions for coordinate scaling
+      var vw = pageInfo.viewportWidth || 1280;
+      var vh = pageInfo.viewportHeight || 720;
+      var imageForAI = screenshot.dataUrl; // Send original hi-res screenshot
+      var imgDims = await getImageDimensions(screenshot.dataUrl);
+      var imgW = imgDims ? imgDims.width : vw;
+      var imgH = imgDims ? imgDims.height : vh;
+      var scaleX = vw / imgW; // Will be ~0.5 on 2x DPR displays, 1.0 on 1x
+      var scaleY = vh / imgH;
+
       if (v2Cancelled) { addMsg('sys', '\u23f9 Terminated by user.'); break; }
 
-      // Build system prompt with current DPR and viewport dimensions
+      // Build system prompt — image dimensions now exactly match CSS coordinate space
       var EXEC_SYS =
-        'You are Olanga v2.0, a vision-based browser automation agent.\n' +
-        'You receive the user\'s goal and a REAL SCREENSHOT of the current browser page.\n' +
-        'You MUST look at the screenshot image carefully to understand what is on screen.\n\n' +
-        'COORDINATE SYSTEM \u2014 READ CAREFULLY:\n' +
-        '- The screenshot image is ' + Math.round((pageInfo.viewportWidth || 1280) * currentDpr) + ' \u00d7 ' + Math.round((pageInfo.viewportHeight || 720) * currentDpr) + ' pixels.\n' +
-        '- Your coordinates MUST be in IMAGE PIXEL space (i.e. relative to the screenshot image dimensions above).\n' +
-        '- A faint red dashed coordinate grid with labels every 100px is overlaid on the screenshot to help you pinpoint locations.\n' +
-        '- Coordinates (0, 0) is the top-left corner of the image.\n\n' +
-        'ABSOLUTE RULES \u2014 VIOLATION MEANS FAILURE:\n' +
-        '1. You MUST perform real actions. NEVER say "done" unless you have ALREADY performed all required actions in previous steps and can visually confirm the result in the screenshot.\n' +
-        '2. You can ONLY see what is in the screenshot image. Do NOT reference DOM indices, element IDs, or any internal page structure \u2014 you cannot see those.\n' +
-        '3. Provide EXACT pixel coordinates (x, y) in image-pixel space. Use the red grid overlay for precision.\n' +
-        '4. Output exactly ONE action per response.\n' +
-        '5. To type text into a field or document: first click on it with {"type":"click"}, then in the NEXT step use {"type":"type"} to enter the text.\n' +
-        '6. NEVER hallucinate or assume actions have been taken. If the screenshot does not show your action\'s result, the action has NOT happened yet.\n' +
-        '7. NEVER claim text is already typed or a button already clicked unless you can VISUALLY SEE the evidence in the current screenshot.\n' +
-        '8. CRITICAL: If you clicked on a text field or document in the previous step, ASSUME it is now focused even if you do not see a blinking cursor (cursors blink and may not appear in the screenshot). Proceed to type immediately in the next step without clicking again.\n\n' +
+        'You are Olanga v2.0, an expert vision-based browser automation agent. You control a real browser by examining screenshots and issuing precise actions.\n' +
+        'You receive the user\'s goal, a REAL SCREENSHOT of the current page, and a full history of actions you have already taken.\n' +
+        'You MUST examine the screenshot carefully before every action.\n\n' +
+        'COORDINATE SYSTEM:\n' +
+        '- The screenshot image is EXACTLY ' + imgW + ' \u00d7 ' + imgH + ' pixels. Pixel (0,0)=top-left, (' + (imgW-1) + ',' + (imgH-1) + ')=bottom-right.\n' +
+        '- Image pixel coordinates map 1:1 to where clicks land on the page.\n' +
+        '- PRECISION: mentally divide the image into quadrants, then narrow down. A button 1/4 from the left = x\u2248' + Math.round(imgW/4) + '.\n\n' +
+        'MULTI-STEP WORKFLOW STRATEGY (CRITICAL FOR COMPLEX TASKS):\n' +
+        '- PLAN AHEAD: Before acting, think about ALL the steps needed to complete the goal from the current state. State your plan in the <reason> tags.\n' +
+        '- TRACK PROGRESS: Review the ACTION HISTORY to understand what has already been done. Do NOT repeat completed steps.\n' +
+        '- VERIFY BEFORE PROCEEDING: After each action, the next screenshot will show the result. Check if your action succeeded before moving on.\n' +
+        '- HANDLE LOADING STATES: If a dialog, dropdown, or page is still loading (spinner visible, content not yet appeared), use {"type":"wait"} to pause and check again.\n' +
+        '- HANDLE DIALOGS/MODALS: When a modal or dialog appears, interact with elements INSIDE the dialog. The background page is not clickable.\n' +
+        '- HANDLE DROPDOWNS: After clicking a dropdown, wait for the menu to appear, then click the desired option. Dropdown options may appear as a floating list.\n' +
+        '- IF AN ACTION FAILED: If the screenshot shows your action had no effect, try a different approach (different coordinates, different element, or try scrolling to reveal the target).\n' +
+        '- NEVER GIVE UP: If one approach doesn\'t work, try an alternative. Use keyboard shortcuts when clicking is unreliable.\n\n' +
+        'RULES:\n' +
+        '1. Output exactly ONE action per response.\n' +
+        '2. NEVER say "done" unless you can VISUALLY CONFIRM the goal is fully achieved in the current screenshot.\n' +
+        '3. Do NOT reference DOM, element IDs, or page internals \u2014 you can only see the screenshot.\n' +
+        '4. After clicking a text field, it is FOCUSED. Next step: use {"type":"type","text":"..."} WITHOUT coordinates.\n' +
+        '5. For complex apps (Google Docs, Sheets, etc.), prefer keyboard shortcuts over tiny toolbar buttons.\n' +
+        '6. ALWAYS CLICK VISIBLE BUTTONS: When you see a button on screen (Send, Share, Done, OK, Submit), you MUST click it with click action. Do NOT press Enter as a substitute. Enter often does nothing or triggers the wrong action.\n' +
+        '7. After typing in a field, look at the screen: if a suggestion dropdown appeared, CLICK it. If a button appeared, CLICK it. Do NOT just press Enter.\n' +
+        '8. If you see a confirmation dialog, CLICK the confirm button. Do not press Enter.\n\n' +
         'OUTPUT FORMAT:\n' +
-        'First, describe what you ACTUALLY SEE in the screenshot in 1-2 sentences wrapped in <reason> tags.\n' +
-        'Then output ONE JSON action:\n\n' +
+        '<reason>\n1. What I see in the screenshot right now.\n2. What has been done so far (from action history).\n3. What still needs to be done to achieve the goal.\n4. What specific action I will take next and why.\n</reason>\n' +
+        'Then ONE JSON action:\n\n' +
         'Available actions:\n' +
-        '{"type":"click","x":N,"y":N} \u2014 Click at exact pixel coordinates (in image-pixel space)\n' +
-        '{"type":"type","text":"..."} \u2014 Type text into the currently focused/clicked element\n' +
-        '{"type":"key","key":"Enter"} \u2014 Press a key (Enter, Tab, Escape, Backspace, ArrowDown, ArrowUp, Space)\n' +
+        '{"type":"click","x":N,"y":N} \u2014 Click the exact center of an element (PREFERRED for all buttons!)\n' +
+        '{"type":"type","text":"..."} \u2014 Type text (field must already be focused from a prior click)\n' +
+        '{"type":"key","key":"a","modifiers":["Control"]} \u2014 Press a key (ONLY for keyboard shortcuts like Ctrl+A, NOT for clicking buttons!)\n' +
+        '{"type":"highlight","startX":N,"startY":N,"endX":N,"endY":N} \u2014 Click-drag to select text\n' +
         '{"type":"scroll","direction":"down","amount":400} \u2014 Scroll the page\n' +
-        '{"type":"done"} \u2014 ONLY when you can visually confirm in the screenshot that the goal is fully achieved\n\n' +
-        'WORKFLOW EXAMPLE \u2014 typing "hello" into a search box:\n' +
-        'Step 1: <reason>I see a search box at approximately (500, 300). I will click on it to focus it.</reason>\n{"type":"click","x":500,"y":300}\n' +
-        'Step 2: <reason>I clicked the search box previously. I will assume it is focused and type the text.</reason>\n{"type":"type","text":"hello"}\n' +
-        'Step 3: <reason>I can see "hello" is now typed in the search box. The goal is complete.</reason>\n{"type":"done"}';
+        '{"type":"wait"} \u2014 Wait 2 seconds for loading/animations, then re-examine\n' +
+        '{"type":"done"} \u2014 Goal is fully achieved (MUST be visually confirmed)\n\n' +
+        'COMPLEX TASK EXAMPLE \u2014 sharing a Google Doc with user@gmail.com:\n' +
+        'Step 1: <reason>I see a Google Doc. To share it, I need to click the blue "Share" button in the top-right area. I see it at approximately (' + Math.round(vw * 0.88) + ', 25). Remaining: click Share \u2192 type email \u2192 set permissions \u2192 click Send.</reason>\n{"type":"click","x":' + Math.round(vw * 0.88) + ',"y":25}\n' +
+        'Step 2: <reason>The Share dialog has appeared. I can see a text field that says "Add people, groups, and calendar events". I will click on it to focus it. Remaining: type email \u2192 set permissions \u2192 click Send.</reason>\n{"type":"click","x":' + Math.round(vw * 0.5) + ',"y":' + Math.round(vh * 0.4) + '}\n' +
+        'Step 3: <reason>The email input field is now focused (I can see a cursor/highlight). I will type the email address. Remaining: confirm email \u2192 set permissions \u2192 click Send.</reason>\n{"type":"type","text":"user@gmail.com"}\n' +
+        'Step 4: <reason>I typed the email. A suggestion dropdown appeared showing the email. I will CLICK the suggestion to confirm (NOT press Enter). Remaining: click Send.</reason>\n{"type":"click","x":' + Math.round(vw * 0.5) + ',"y":' + Math.round(vh * 0.48) + '}\n' +
+        'Step 5: <reason>The email has been added as a recipient. I can see the user listed. Now I need to click the "Send" or "Share" button to complete sharing. I see it at the bottom-right of the dialog.</reason>\n{"type":"click","x":' + Math.round(vw * 0.62) + ',"y":' + Math.round(vh * 0.65) + '}\n' +
+        'Step 6: <reason>I can see a confirmation or the dialog has closed. The document has been shared successfully. The goal is complete.</reason>\n{"type":"done"}';
 
       addThk();
+
+      // Build action history string
+      var historyStr = actionHistory.length > 0
+        ? actionHistory.map(function(h, i) { return 'Step ' + (i + 1) + ': ' + h; }).join('\n')
+        : '(none yet \u2014 this is the first step)';
 
       var execPrompt =
         'GOAL: "' + userMsg + '"\n\n' +
         'STEP: ' + stepN + ' of ' + MAX_STEPS + '\n' +
         'PAGE URL: ' + (pageInfo.url || 'unknown') + '\n' +
         'PAGE TITLE: ' + (pageInfo.title || 'unknown') + '\n' +
-        'VIEWPORT: ' + (pageInfo.viewportWidth || '?') + 'x' + (pageInfo.viewportHeight || '?') + '\n' +
+        'IMAGE SIZE: ' + imgW + 'x' + imgH + ' pixels (coordinates must be within 0 to ' + (imgW-1) + ' for x, 0 to ' + (imgH-1) + ' for y)\n' +
         'SCROLL POSITION: ' + (pageInfo.scrollY || 0) + 'px from top\n\n' +
-        'IMPORTANT: The attached screenshot shows EXACTLY what is on screen right now. ' +
-        (stepN === 1 ? 'This is the FIRST step \u2014 NO actions have been taken yet. You must start working toward the goal.' : 'Look at the screenshot to verify the result of previous actions before deciding next steps.\n\nPREVIOUS ACTION YOU TOOK: ' + (lastActionStr || 'None')) +
-        '\n\nDescribe what you see, then give your ONE action.';
+        'ACTION HISTORY (what you have done so far):\n' + historyStr + '\n\n' +
+        'CURRENT SCREENSHOT: The attached image shows EXACTLY what the browser looks like RIGHT NOW, AFTER all previous actions.\n' +
+        (stepN === 1
+          ? 'This is the FIRST step. No actions have been taken yet. Plan the full workflow, then take the first action.'
+          : 'Examine the screenshot to verify if your last action (Step ' + (stepN - 1) + ') succeeded. Then decide what to do next.') +
+        '\n\nThink step-by-step in <reason> tags, then output your ONE action.';
 
       var raw = '';
       try {
-        raw = await callVisionAI(EXEC_SYS, execPrompt, screenshot.dataUrl);
+        raw = await callVisionAI(EXEC_SYS, execPrompt, imageForAI);
         callCount++;
       } catch (e) {
         rmThk();
@@ -353,6 +403,21 @@
 
       if (v2Cancelled) { addMsg('sys', '\u23f9 Terminated by user.'); break; }
 
+      // Block bare Enter key — AI must click buttons instead
+      if (action.type === 'key' && action.key === 'Enter' && (!action.modifiers || action.modifiers.length === 0)) {
+        addMsg('sys', '\u26a0 Blocked bare Enter. You must CLICK buttons, not press Enter. Retrying...');
+        actionHistory.push('BLOCKED: tried to press Enter (must click buttons instead)');
+        continue;
+      }
+
+      // Scale coordinates from image pixel space to CSS space
+      if (action.x !== undefined) { action.x = Math.round(action.x * scaleX); }
+      if (action.y !== undefined) { action.y = Math.round(action.y * scaleY); }
+      if (action.startX !== undefined) { action.startX = Math.round(action.startX * scaleX); }
+      if (action.startY !== undefined) { action.startY = Math.round(action.startY * scaleY); }
+      if (action.endX !== undefined) { action.endX = Math.round(action.endX * scaleX); }
+      if (action.endY !== undefined) { action.endY = Math.round(action.endY * scaleY); }
+
       // Handle done
       if (action.type === 'done') {
         addMsg('ai', '\u2705 Done. (' + reasoning + ') \u23f1' + elapsed);
@@ -362,25 +427,36 @@
       // Show step
       var actionLabel = action.type;
       if (action.type === 'click') actionLabel = 'click (' + action.x + ',' + action.y + ')';
-      else if (action.type === 'type') actionLabel = 'type "' + (action.text || '').slice(0, 30) + '"' + (action.x ? ' at (' + action.x + ',' + action.y + ')' : '');
-      else if (action.type === 'key') actionLabel = 'press ' + action.key;
+      else if (action.type === 'highlight') actionLabel = 'highlight (' + action.startX + ',' + action.startY + ') to (' + action.endX + ',' + action.endY + ')';
+      else if (action.type === 'type') actionLabel = 'type "' + (action.text || '').slice(0, 30) + '"' + (action.x !== undefined ? ' at (' + action.x + ',' + action.y + ')' : '');
+      else if (action.type === 'key') actionLabel = 'press ' + (action.modifiers ? action.modifiers.join('+') + '+' : '') + action.key;
       else if (action.type === 'scroll') actionLabel = 'scroll ' + (action.direction || 'down');
 
       addMsg('ai', 'Step ' + stepN + ': ' + reasoning + '\n\u2192 ' + actionLabel + '\n\u23f1' + elapsed);
 
-      // Execute action \u2014 scale coordinates from image-pixel space to CSS-pixel space
+      // Accumulate action history for next iteration
+      actionHistory.push(actionLabel + (reasoning !== 'Taking action...' ? ' — ' + reasoning.slice(0, 80) : ''));
+
+      // Coordinates come directly from the AI — no tag ID resolution needed
+
+      // Handle wait action (no execution needed, just pause)
+      if (action.type === 'wait') {
+        addMsg('sys', '\u23f3 Waiting 2s for page to settle...');
+        await delay(2000);
+        continue;
+      }
+
+      // Execute action — coordinates are already in CSS space
       var result;
       try {
         if (action.type === 'click') {
-          var cssX = Math.round(action.x / currentDpr);
-          var cssY = Math.round(action.y / currentDpr);
-          result = await v2Exec({ type: 'OLANGA_V2_CLICK', x: cssX, y: cssY });
+          result = await v2Exec({ type: 'OLANGA_V2_CLICK', x: action.x, y: action.y });
+        } else if (action.type === 'highlight') {
+          result = await v2Exec({ type: 'OLANGA_V2_HIGHLIGHT', startX: action.startX, startY: action.startY, endX: action.endX, endY: action.endY });
         } else if (action.type === 'type') {
-          var typeX = action.x !== undefined ? Math.round(action.x / currentDpr) : undefined;
-          var typeY = action.y !== undefined ? Math.round(action.y / currentDpr) : undefined;
-          result = await v2Exec({ type: 'OLANGA_V2_TYPE', text: action.text, x: typeX, y: typeY });
+          result = await v2Exec({ type: 'OLANGA_V2_TYPE', text: action.text, x: action.x, y: action.y });
         } else if (action.type === 'key') {
-          result = await v2Exec({ type: 'OLANGA_V2_KEY', key: action.key });
+          result = await v2Exec({ type: 'OLANGA_V2_KEY', key: action.key, modifiers: action.modifiers });
         } else if (action.type === 'scroll') {
           result = await v2Exec({ type: 'OLANGA_V2_SCROLL', direction: action.direction || 'down', amount: action.amount || 400 });
         } else {
@@ -402,9 +478,9 @@
 
       // Wait for page to settle after actions
       if (action.type === 'click') {
-        await delay(2000);
+        await delay(1500);
       } else if (action.type === 'type') {
-        await delay(1000);
+        await delay(800);
       } else {
         await delay(500);
       }

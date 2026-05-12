@@ -113,6 +113,7 @@ function updateModelList() {
   var sel = document.getElementById('modelSel');
   sel.innerHTML = '';
   var models = [
+    ['gemini-2.5-flash-lite', 'Gemini 2.5 Lite'],
     ['gemini-2.5-flash', 'Gemini Flash'],
     ['gemma-4-31b-it', 'Gemini Gemma 4 (Gemma 4 31B)']
   ];

@@ -83,12 +83,8 @@ async function handleMessage(msg, sender, sendResponse) {
           } catch (e) { /* default to 1 */ }
         }
 
-        if (tabId) {
-          try { await chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_DRAW_GRID' }); } catch(e){}
-          await new Promise(r => setTimeout(r, 100));
-        }
-
-        // captureVisibleTab with null windowId captures the current window
+        // Capture a CLEAN screenshot — no overlays, no grid, no tags.
+        // The AI will pick click targets purely by visual coordinate estimation.
         let dataUrl;
         try {
           dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
@@ -96,10 +92,6 @@ async function handleMessage(msg, sender, sendResponse) {
           const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           if (!tab) throw new Error('No active tab for screenshot');
           dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-        }
-
-        if (tabId) {
-          try { await chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_CLEAR_GRID' }); } catch(e){}
         }
 
         sendResponse({ ok: true, dataUrl: dataUrl, devicePixelRatio: dpr });
@@ -148,6 +140,18 @@ async function handleMessage(msg, sender, sendResponse) {
       return;
     }
 
+    if (msg.cmd === 'v2_get_tag') {
+      const tabId = msg.tabId;
+      if (!tabId) { sendResponse({ ok: false, err: 'No tabId' }); return; }
+      try {
+        const response = await chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_GET_TAG', id: msg.id });
+        sendResponse(response || { ok: false, err: 'No response from page' });
+      } catch (e) {
+        sendResponse({ ok: false, err: e.message });
+      }
+      return;
+    }
+
     if (msg.cmd === 'v2_exec') {
       const tabId = msg.tabId;
       if (!tabId) { sendResponse({ ok: false, err: 'No tabId' }); return; }
@@ -162,23 +166,73 @@ async function handleMessage(msg, sender, sendResponse) {
         await ensureDebuggerAttached(tabId);
 
         if (action.type === 'OLANGA_V2_CLICK') {
+          // Snap to nearest interactive element for precision correction
+          let clickX = action.x;
+          let clickY = action.y;
+          let snappedInfo = '';
+          try {
+            const snapResult = await chrome.tabs.sendMessage(tabId, {
+              type: 'OLANGA_V2_SNAP', x: action.x, y: action.y
+            });
+            if (snapResult && snapResult.ok && snapResult.x !== undefined) {
+              clickX = snapResult.x;
+              clickY = snapResult.y;
+              if (snapResult.snapped) {
+                snappedInfo = ' (snapped ' + snapResult.distance + 'px to ' + (snapResult.element || 'element') + ')';
+              }
+            }
+          } catch (e) { /* use original coordinates if snap fails */ }
+
           // Send mouseMoved FIRST — required for correct hit-testing in many UIs
           await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-            type: "mouseMoved", x: action.x, y: action.y
+            type: "mouseMoved", x: clickX, y: clickY
           });
           await new Promise(r => setTimeout(r, 30));
           await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-            type: "mousePressed", x: action.x, y: action.y, button: "left", clickCount: 1
+            type: "mousePressed", x: clickX, y: clickY, button: "left", clickCount: 1
           });
           await new Promise(r => setTimeout(r, 50));
           await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
-            type: "mouseReleased", x: action.x, y: action.y, button: "left", clickCount: 1
+            type: "mouseReleased", x: clickX, y: clickY, button: "left", clickCount: 1
+          });
+          
+          // Show visual indicator at the actual click location
+          chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_CLICK', x: clickX, y: clickY }).catch(() => {});
+          sendResponse({ ok: true, snapped: snappedInfo });
+        } 
+        else if (action.type === 'OLANGA_V2_HIGHLIGHT') {
+          // Send mouseMoved to start coordinates
+          await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+            type: "mouseMoved", x: action.startX, y: action.startY
+          });
+          await new Promise(r => setTimeout(r, 30));
+          // Press mouse button
+          await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+            type: "mousePressed", x: action.startX, y: action.startY, button: "left", buttons: 1, clickCount: 1
+          });
+          await new Promise(r => setTimeout(r, 100));
+          
+          // Drag to end coordinates in steps for realism
+          const steps = 5;
+          for (let i = 1; i <= steps; i++) {
+            const curX = action.startX + (action.endX - action.startX) * (i / steps);
+            const curY = action.startY + (action.endY - action.startY) * (i / steps);
+            await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+              type: "mouseMoved", x: curX, y: curY, button: "left", buttons: 1
+            });
+            await new Promise(r => setTimeout(r, 20));
+          }
+          await new Promise(r => setTimeout(r, 50));
+          
+          // Release mouse button
+          await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+            type: "mouseReleased", x: action.endX, y: action.endY, button: "left", clickCount: 1
           });
           
           // Still show visual indicator via content script if possible
-          chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_CLICK', x: action.x, y: action.y }).catch(() => {});
+          chrome.tabs.sendMessage(tabId, { type: 'OLANGA_V2_HIGHLIGHT', startX: action.startX, startY: action.startY, endX: action.endX, endY: action.endY }).catch(() => {});
           sendResponse({ ok: true });
-        } 
+        }
         else if (action.type === 'OLANGA_V2_TYPE') {
           if (action.x !== undefined && action.y !== undefined) {
             await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
@@ -219,16 +273,24 @@ async function handleMessage(msg, sender, sendResponse) {
           if (action.key === 'ArrowDown') { keyText = ''; code = 'ArrowDown'; vCode = 40; }
           if (action.key === 'ArrowUp') { keyText = ''; code = 'ArrowUp'; vCode = 38; }
           if (action.key === 'Space') { keyText = ' '; code = 'Space'; vCode = 32; }
+
+          let modifiers = 0;
+          if (Array.isArray(action.modifiers)) {
+            if (action.modifiers.includes('Alt')) modifiers |= 1;
+            if (action.modifiers.includes('Control') || action.modifiers.includes('Ctrl')) modifiers |= 2;
+            if (action.modifiers.includes('Meta') || action.modifiers.includes('Command')) modifiers |= 4;
+            if (action.modifiers.includes('Shift')) modifiers |= 8;
+          }
           
           const downParams = {
-            type: "keyDown", key: action.key, code: code
+            type: "keyDown", key: action.key, code: code, modifiers: modifiers
           };
           if (vCode) downParams.windowsVirtualKeyCode = vCode;
           if (keyText && keyText !== action.key) downParams.text = keyText;
 
           await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", downParams);
           
-          const upParams = { type: "keyUp", key: action.key, code: code };
+          const upParams = { type: "keyUp", key: action.key, code: code, modifiers: modifiers };
           if (vCode) upParams.windowsVirtualKeyCode = vCode;
           
           await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", upParams);
